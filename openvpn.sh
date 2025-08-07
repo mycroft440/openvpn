@@ -2,7 +2,7 @@
 # =================================================================
 # OpenVPN Installer & Manager
 # Baseado no script original do SSH-PRO @TMYCOMNECTVPN
-# Versão Revisada, Refatorada e Aprimorada (Corrigida para erro compress none em 2025)
+# Versão Revisada, Refatorada e Aprimorada (Corrigida para demora em dependências)
 # =================================================================
 # --- Variáveis de Cor ---
 readonly RED=$'\e[1;31m'
@@ -27,14 +27,21 @@ fun_bar() {
     local cmd="$1"
     local spinner="/-\\|"
     local i=0
+    local timeout=300  # 5min timeout em segundos
    
-    eval "$cmd" >/dev/null 2>&1 &
+    eval "$cmd" &  # Removido >/dev/null 2>&1 para mostrar outputs reais
     local pid=$!
    
     tput civis
     echo -ne "${YELLOW}Aguarde... [${SCOLOR}"
    
+    local start_time=$(date +%s)
     while ps -p "$pid" > /dev/null; do
+        current_time=$(date +%s)
+        if [[ $((current_time - start_time)) -gt $timeout ]]; then
+            kill $pid 2>/dev/null
+            die "Timeout na execução: $cmd demorou mais de 5min. Verifique rede ou mirrors."
+        fi
         i=$(( (i + 1) % 4 ))
         echo -ne "${CYAN}${spinner:$i:1}${SCOLOR}"
         sleep 0.2
@@ -76,9 +83,9 @@ check_dependencies() {
         echo -ne "${WHITE}Deseja instalá-las automaticamente? [s/N]: ${SCOLOR}"
         read -r install_choice
         if [[ "$install_choice" =~ ^[sS]$ ]]; then
-            echo -e "${CYAN}Instalando dependências faltantes...${SCOLOR}"
+            echo -e "${CYAN}Instalando dependências faltantes... (outputs visíveis para monitorar)${SCOLOR}"
             if [[ "$OS" == "debian" ]]; then
-                fun_bar "apt update && apt install -y ${missing[*]}"
+                fun_bar "apt update -qq && apt install -y -qq ${missing[*]}"  # -qq para menos verbose, mas outputs ainda visíveis
             elif [[ "$OS" == "centos" ]]; then
                 if ! yum list installed epel-release >/dev/null 2>&1; then
                     fun_bar "yum install -y epel-release"
@@ -100,7 +107,6 @@ check_dependencies() {
     else
         echo -e "${GREEN}Todas as dependências estão presentes.${SCOLOR}"
     fi
-    # Checagem extra para versão do OpenVPN
     local ovpn_version=$(openvpn --version | head -1 | awk '{print $2}')
     if [[ "$ovpn_version" < "2.5" ]]; then
         warn "Versão do OpenVPN ($ovpn_version) é antiga. Recomendo atualizar para 2.5+ para compatibilidade."
@@ -379,7 +385,7 @@ main_menu() {
     while true; do
         clear
         echo -e "${BLUE}--- OpenVPN Installer & Manager ---${SCOLOR}"
-        echo -e "${CYAN}Versão Funcional Revisada (Corrigida para compress)${SCOLOR}\n"
+        echo -e "${CYAN}Versão Funcional Revisada (Corrigida para dependências lentas)${SCOLOR}\n"
        
         if systemctl is-active --quiet openvpn@server 2>/dev/null || service openvpn@server status >/dev/null 2>&1; then
             local port proto
