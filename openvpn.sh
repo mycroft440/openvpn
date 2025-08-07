@@ -1,196 +1,203 @@
 #!/bin/bash
-#====================================================
+# =================================================================
 #	OpenVPN Installer & Manager
 #	Baseado no script original do SSH-PRO @TMYCOMNECTVPN
-#	Versão Revisada e Funcional
-#====================================================
+#	Versão Revisada, Refatorada e Aprimorada
+# =================================================================
 
-# Cores
-RED=\'\\033[1;31m\'
-GREEN=\'\\033[1;32m\'
-YELLOW=\'\\033[1;33m\'
-BLUE=\'\\033[1;34m\'
-PURPLE=\'\\033[1;35m\'
-CYAN=\'\\033[1;36m\'
-WHITE=\'\\033[1;37m\'
-SCOLOR=\'\\033[0m\'
+# --- Variáveis de Cor ---
+# Usadas para formatar a saída do terminal, tornando-a mais legível.
+readonly RED='\033[1;31m'
+readonly GREEN='\033[1;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[1;34m'
+readonly CYAN='\033[1;36m'
+readonly WHITE='\033[1;37m'
+readonly SCOLOR='\033[0m'
 
-# Verificações iniciais
-[[ "$EUID" -ne 0 ]] && {
-    echo -e "${RED}[x] VOCÊ PRECISA EXECUTAR COMO USUÁRIO ROOT!${SCOLOR}"
-    exit 1
+# --- Funções de Utilidade ---
+
+# Exibe uma mensagem de erro e sai do script.
+# Parâmetro 1: Mensagem de erro.
+# Parâmetro 2: Código de saída (opcional).
+die() {
+    echo -e "${RED}[ERRO] $1${SCOLOR}" >&2
+    exit "${2:-1}"
 }
 
-# Verificar se é bash
-if readlink /proc/$$/exe | grep -qs "dash"; then
-    echo -e "${RED}Este script precisa ser executado com bash, não sh${SCOLOR}"
-    exit 1
-fi
-
-# Verificar TUN/TAP
-[[ ! -e /dev/net/tun ]] && {
-    echo -e "${RED}TUN TAP NÃO DISPONÍVEL${SCOLOR}"
-    exit 3
+# Exibe uma mensagem de aviso.
+# Parâmetro 1: Mensagem de aviso.
+warn() {
+    echo -e "${YELLOW}[AVISO] $1${SCOLOR}"
 }
 
-# Detectar OS
-if [[ -e /etc/debian_version ]]; then
-    OS=debian
-    GROUPNAME=nogroup
-    RCLOCAL=\'/etc/rc.local\'
-elif [[ -e /etc/centos-release || -e /etc/redhat-release ]]; then
-    OS=centos
-    GROUPNAME=nobody
-    RCLOCAL=\'/etc/rc.d/rc.local\'
-else
-    echo -e "${RED}SISTEMA NÃO SUPORTADO${SCOLOR}"
-    exit 5
-fi
+# Exibe uma mensagem de sucesso.
+# Parâmetro 1: Mensagem de sucesso.
+success() {
+    echo -e "${GREEN}[SUCESSO] $1${SCOLOR}"
+}
 
-# Função de barra de progresso (mantida para feedback visual)
+# Exibe uma barra de progresso para comandos demorados.
+# Parâmetro 1: Comando a ser executado em segundo plano.
 fun_bar() {
-    comando[0]="$1"
-    comando[1]="$2"
-    (
-        [[ -e $HOME/fim ]] && rm $HOME/fim
-        ${comando[0]} >/dev/null 2>&1
-        ${comando[1]} >/dev/null 2>&1
-        touch $HOME/fim
-    ) >/dev/null 2>&1 &
-    tput civis
-    echo -ne "${YELLOW}AGUARDE ${WHITE}- ${YELLOW}["
-    while true; do
-        for ((i = 0; i < 18; i++)); do
-            echo -ne "${RED}#"
-            sleep 0.1s
-        done
-        [[ -e $HOME/fim ]] && rm $HOME/fim && break
-        echo -e "${YELLOW}]"
-        sleep 1s
-        tput cuu1
-        tput dl1
-        echo -ne "${YELLOW}AGUARDE ${WHITE}- ${YELLOW}["
-    done
-    echo -e "${YELLOW}]${WHITE} -${GREEN} OK !${WHITE}"
-    tput cnorm
-}
-
-# Função para verificar portas em uso
-verif_ptrs() {
-    porta=$1
-    PT=$(lsof -V -i tcp -P -n 2>/dev/null | grep -v "ESTABLISHED" | grep -v "COMMAND" | grep "LISTEN")
-    for pton in $(echo -e "$PT" | cut -d: -f2 | cut -d\' \' -f1 | uniq); do
-        svcs=$(echo -e "$PT" | grep -w "$pton" | awk \'{print $1}\' | uniq)
-        [[ "$porta" = "$pton" ]] && {
-            echo -e "\n${RED}PORTA ${YELLOW}$porta ${RED}EM USO PELO ${WHITE}$svcs${SCOLOR}"
-            sleep 3
-            menu_principal
-        }
-    done
-}
-
-# Função para criar novo cliente
-newclient() {
-    CLIENT_NAME=$1
-    cd /etc/openvpn/easy-rsa/
-    echo "yes" | ./easyrsa build-client-full $CLIENT_NAME nopass
+    local cmd="$1"
+    local progress_char="#"
+    local spinner="/-\\|"
+    local i=0
     
-    # Gerar arquivo .ovpn
-    mkdir -p ~/ovpn_clients
-    cat > ~/ovpn_clients/$CLIENT_NAME.ovpn << EOF
-client
-dev tun
-proto $PROTOCOL
-remote $IP $PORT
-resolv-retry infinite
-nobind
-persist-key
-persist-tun
-remote-cert-tls server
-
-<ca>
-$(cat pki/ca.crt)
-</ca>
-<cert>
-$(cat pki/issued/$CLIENT_NAME.crt)
-</cert>
-<key>
-$(cat pki/private/$CLIENT_NAME.key)
-</key>
-<tls-auth>
-$(cat pki/ta.key)
-</tls-auth>
-EOF
-    echo -e "${GREEN}Arquivo de cliente gerado: ~/ovpn_clients/$CLIENT_NAME.ovpn${SCOLOR}"
+    # Executa o comando em segundo plano, redirecionando a saída
+    eval "$cmd" >/dev/null 2>&1 &
+    local pid=$!
+    
+    tput civis # Oculta o cursor
+    echo -ne "${YELLOW}Aguarde... [${SCOLOR}"
+    
+    while ps -p $pid > /dev/null; do
+        i=$(( (i+1) %4 ))
+        echo -ne "${CYAN}${spinner:$i:1}${SCOLOR}"
+        sleep 0.2
+        echo -ne "\b"
+    done
+    
+    echo -e "${YELLOW}]${SCOLOR} - ${GREEN}Concluído!${SCOLOR}"
+    tput cnorm # Exibe o cursor novamente
 }
 
-# Função principal do OpenVPN
-fun_openvpn() {
-    # Detectar IP
-    IP=$(ip addr | grep \'inet\' | grep -v inet6 | grep -vE \'127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\' | grep -o -E \'[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\' | head -1)
-    [[ "$IP" = "" ]] && {
-        IP=$(hostname -I | cut -d\' \' -f1)
-    }
+# --- Verificações Iniciais ---
 
-    # Verificar se OpenVPN já está instalado
-    if systemctl is-active --quiet openvpn@server;
-    then
-        gerenciar_openvpn
-        return
+# Verifica se o script está a ser executado como root.
+check_root() {
+    [[ "$EUID" -ne 0 ]] && die "Este script precisa ser executado como utilizador ROOT."
+}
+
+# Verifica se o script está a ser executado com bash, não sh.
+check_bash() {
+    readlink /proc/$$/exe | grep -q "bash" || die "Execute este script com bash, não com sh."
+}
+
+# Verifica se o TUN/TAP está disponível.
+check_tun() {
+    [[ ! -e /dev/net/tun ]] && die "O dispositivo TUN/TAP não está disponível."
+}
+
+# Verifica se os comandos necessários estão instalados.
+check_dependencies() {
+    local missing_deps=()
+    for cmd in wget openvpn lsof easy-rsa; do
+        command -v "$cmd" &>/dev/null || missing_deps+=("$cmd")
+    done
+    [[ ${#missing_deps[@]} -gt 0 ]] && die "Dependências em falta: ${missing_deps[*]}. Por favor, instale-as."
+}
+
+# --- Detecção de Sistema Operacional ---
+detect_os() {
+    if [[ -f /etc/os-release ]]; then
+        # shellcheck source=/dev/null
+        source /etc/os-release
+        OS_ID="$ID"
+    else
+        die "Não foi possível detectar o sistema operacional."
     fi
 
-    # Instalação do OpenVPN
-    clear
-    echo -e "\E[44;1;37m          INSTALADOR OPENVPN           \E[0m"
-    echo ""
-    echo -e "${GREEN}Iniciando instalação do OpenVPN...${SCOLOR}"
-    echo ""
+    case "$OS_ID" in
+        ubuntu|debian)
+            OS="debian"
+            GROUPNAME="nogroup"
+            ;;
+        centos|fedora|rhel)
+            OS="centos"
+            GROUPNAME="nobody"
+            ;;
+        *)
+            die "Sistema operacional '$OS_ID' não suportado."
+            ;;
+    esac
+}
 
+# --- Funções Principais do OpenVPN ---
+
+# Instala o OpenVPN e as suas dependências.
+install_openvpn() {
+    clear
+    echo -e "${BLUE}--- Instalador OpenVPN ---${SCOLOR}"
+    
     # Instalar dependências
-    echo -e "${YELLOW}Instalando dependências...${SCOLOR}"
+    echo -e "${CYAN}A instalar dependências...${SCOLOR}"
     if [[ "$OS" = "debian" ]]; then
-        fun_bar \'apt-get update\' \'apt-get install -y openvpn easy-rsa lsof\'
-    elif [[ "$OS" = "centos" ]]; then
-        fun_bar \'yum update -y\' \'yum install -y openvpn easy-rsa lsof\'
+        fun_bar "apt-get update && apt-get install -y openvpn easy-rsa lsof iptables-persistent"
+    elif [[ "$OS" = "centos" ]]; fun_bar "yum install -y epel-release && yum install -y openvpn easy-rsa lsof firewalld"
     fi
 
     # Configurar EasyRSA
-    echo -e "${YELLOW}Configurando EasyRSA...${SCOLOR}"
+    echo -e "${CYAN}A configurar o EasyRSA...${SCOLOR}"
     mkdir -p /etc/openvpn/easy-rsa
     cp -r /usr/share/easy-rsa/* /etc/openvpn/easy-rsa/
     chmod +x /etc/openvpn/easy-rsa/easyrsa
-    cd /etc/openvpn/easy-rsa/
-    echo "yes" | ./easyrsa init-pki
+    cd /etc/openvpn/easy-rsa/ || die "Não foi possível aceder ao diretório easy-rsa."
+
+    # Inicializar PKI e construir CA, certificados de servidor e DH
+    ./easyrsa init-pki
     echo "Easy-RSA CA" | ./easyrsa build-ca nopass
     echo "server" | ./easyrsa build-server-full server nopass
     ./easyrsa gen-dh
     openvpn --genkey --secret pki/ta.key
     
-    # Copiar arquivos para o diretório do OpenVPN
+    # Copiar ficheiros para o diretório do OpenVPN
     cp pki/ca.crt pki/issued/server.crt pki/private/server.key pki/dh.pem pki/ta.key /etc/openvpn/
+    
+    # Configurar o servidor
+    configure_server
+    
+    # Configurar o firewall
+    configure_firewall
 
-    # Configurar servidor
-    echo -e "${YELLOW}Configurando servidor OpenVPN...${SCOLOR}"
-    echo -ne "${GREEN}Qual porta deseja usar para o OpenVPN? ${YELLOW}[1194]: ${WHITE}"
-    read -e -i 1194 PORT
-    echo -ne "${GREEN}Qual protocolo deseja usar? ${YELLOW}[1] UDP [2] TCP: ${WHITE}"
-    read -e -i 1 PROTOCOL_CHOICE
+    # Iniciar e habilitar o serviço OpenVPN
+    echo -e "${CYAN}A iniciar o serviço OpenVPN...${SCOLOR}"
+    systemctl enable openvpn@server
+    systemctl start openvpn@server || {
+        warn "O serviço OpenVPN falhou ao iniciar."
+        echo -e "${YELLOW}Verifique os logs com: ${WHITE}journalctl -xeu openvpn@server.service${SCOLOR}"
+        exit 1
+    }
+    
+    success "OpenVPN instalado e iniciado com sucesso!"
+    
+    # Criar o primeiro cliente
+    echo -e "${CYAN}A criar o primeiro cliente...${SCOLOR}"
+    create_client "cliente1"
+    
+    echo -e "\n${CYAN}Pressione ENTER para voltar ao menu...${SCOLOR}"
+    read -r
+}
+
+# Coleta as configurações do servidor do utilizador.
+configure_server() {
+    echo -e "${CYAN}A configurar o servidor OpenVPN...${SCOLOR}"
+    
+    # Obter IP público
+    local IP
+    IP=$(wget -4qO- "http://whatismyip.akamai.com/") || IP=$(hostname -I | awk '{print $1}')
+    
+    echo -ne "${WHITE}Porta para o OpenVPN [padrão: 1194]: ${SCOLOR}"
+    read -r PORT
+    [[ -z "$PORT" ]] && PORT="1194"
+    
+    echo -ne "${WHITE}Protocolo [1] UDP (padrão) [2] TCP: ${SCOLOR}"
+    read -r PROTOCOL_CHOICE
     case $PROTOCOL_CHOICE in
-        1) PROTOCOL=udp ;;
-        2) PROTOCOL=tcp ;;
-        *) PROTOCOL=udp ;;
+        2) PROTOCOL="tcp" ;;
+        *) PROTOCOL="udp" ;;
     esac
 
-    echo -ne "${GREEN}Qual DNS deseja usar? ${YELLOW}[1] Google [2] Cloudflare [3] OpenDNS: ${WHITE}"
-    read -e -i 1 DNS_CHOICE
+    echo -ne "${WHITE}DNS [1] Google (padrão) [2] Cloudflare [3] OpenDNS: ${SCOLOR}"
+    read -r DNS_CHOICE
     case $DNS_CHOICE in
-        1) DNS1=8.8.8.8; DNS2=8.8.4.4 ;;
-        2) DNS1=1.1.1.1; DNS2=1.0.0.1 ;;
-        3) DNS1=208.67.222.222; DNS2=208.67.220.220 ;;
-        *) DNS1=8.8.8.8; DNS2=8.8.4.4 ;;
+        2) DNS1="1.1.1.1"; DNS2="1.0.0.1" ;;
+        3) DNS1="208.67.222.222"; DNS2="208.67.220.220" ;;
+        *) DNS1="8.8.8.8"; DNS2="8.8.4.4" ;;
     esac
-
-    # Criar configuração do servidor
+    
+    # Criar o ficheiro de configuração do servidor
     cat > /etc/openvpn/server.conf << EOF
 port $PORT
 proto $PROTOCOL
@@ -199,10 +206,9 @@ ca ca.crt
 cert server.crt
 key server.key
 dh dh.pem
+auth SHA512
 tls-auth ta.key 0
 key-direction 0
-cipher AES-256-CBC
-auth SHA256
 topology subnet
 server 10.8.0.0 255.255.255.0
 ifconfig-pool-persist ipp.txt
@@ -210,403 +216,241 @@ push "redirect-gateway def1 bypass-dhcp"
 push "dhcp-option DNS $DNS1"
 push "dhcp-option DNS $DNS2"
 keepalive 10 120
+cipher AES-256-CBC
 user nobody
 group $GROUPNAME
 persist-key
 persist-tun
-status openvpn-status.log
+status /var/log/openvpn/openvpn-status.log
+log-append /var/log/openvpn/openvpn.log
 verb 3
 crl-verify crl.pem
-explicit-exit-notify 1
 EOF
+    # Criar diretórios de log
+    mkdir -p /var/log/openvpn
+    # Gerar CRL inicial
+    cd /etc/openvpn/easy-rsa/ || exit
+    ./easyrsa gen-crl
+    cp pki/crl.pem /etc/openvpn/crl.pem
+}
 
-    # Habilitar encaminhamento IP
-    echo \'net.ipv4.ip_forward=1\' >> /etc/sysctl.conf
+# Configura as regras de firewall.
+configure_firewall() {
+    echo -e "${CYAN}A configurar o firewall...${SCOLOR}"
+    # Ativar encaminhamento de IP
+    sed -i 's/#net.ipv4.ip_forward=1/net.ipv4.ip_forward=1/' /etc/sysctl.conf
     sysctl -p
 
-    # Configurar firewall
-    echo -e "${YELLOW}Configurando firewall...${SCOLOR}"
     if [[ "$OS" = "debian" ]]; then
-        apt-get install -y iptables-persistent
-        iptables -A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
-        iptables -A FORWARD -s 10.8.0.0/24 -j ACCEPT
-        iptables -A INPUT -i tun0 -j ACCEPT
-        iptables -A FORWARD -i tun0 -o eth0 -j ACCEPT
-        iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o eth0 -j MASQUERADE
+        local IFACE
+        IFACE=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
+        iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o "$IFACE" -j MASQUERADE
+        iptables -A INPUT -i tun+ -j ACCEPT
+        iptables -A FORWARD -i tun+ -j ACCEPT
+        iptables -A FORWARD -i "$IFACE" -o tun+ -m state --state RELATED,ESTABLISHED -j ACCEPT
         netfilter-persistent save
-        netfilter-persistent reload
     elif [[ "$OS" = "centos" ]]; then
-        yum install -y firewalld
         systemctl start firewalld
         systemctl enable firewalld
-        firewall-cmd --zone=public --add-port=$PORT/$PROTOCOL --permanent
-        firewall-cmd --zone=public --add-masquerade --permanent
-        firewall-cmd --set-default-zone=trusted
+        firewall-cmd --add-service=openvpn --permanent
+        firewall-cmd --add-masquerade --permanent
         firewall-cmd --reload
     fi
-
-    # Iniciar e habilitar OpenVPN
-    systemctl enable openvpn@server
-    systemctl start openvpn@server || {
-        echo -e "${RED}ERRO: O serviço OpenVPN falhou ao iniciar!${SCOLOR}"
-        echo -e "${YELLOW}Por favor, verifique os logs com: ${WHITE}sudo systemctl status openvpn@server.service${SCOLOR}"
-        echo -e "${YELLOW}E também: ${WHITE}sudo journalctl -xeu openvpn@server.service${SCOLOR}"
-        exit 1
-    }
-
-    echo ""
-    echo -e "${GREEN}OpenVPN instalado com sucesso!${SCOLOR}"
-    echo -e "${YELLOW}Criando primeiro cliente...${SCOLOR}"
-    
-    CLIENT="Cliente"
-    newclient $CLIENT
-    
-    echo ""
-    echo -e "${GREEN}Cliente criado! Arquivo: ~/ovpn_clients/$CLIENT.ovpn${SCOLOR}"
-    echo ""
-    echo -e "${GREEN}Pressione ENTER para continuar...${SCOLOR}"
-    read
 }
 
-# Função para gerenciar OpenVPN
-gerenciar_openvpn() {
-    while :; do
-        clear
-        
-        opnp=$(grep "^port" /etc/openvpn/server.conf | awk \'{print $2}\')
-        mult=$(grep -q "duplicate-cn" /etc/openvpn/server.conf && echo -e "${GREEN}◉ " || echo -e "${RED}○ ")
-        
-        echo -e "\E[44;1;37m          GERENCIAR OPENVPN           \E[0m"
-        echo ""
-        echo -e "${YELLOW}PORTA${WHITE}: ${GREEN}$opnp${SCOLOR}"
-        echo ""
-        echo -e "${RED}[${CYAN}1${RED}] ${WHITE}• ${YELLOW}ALTERAR PORTA"
-        echo -e "${RED}[${CYAN}2${RED}] ${WHITE}• ${YELLOW}CRIAR CLIENTE"
-        echo -e "${RED}[${CYAN}3${RED}] ${WHITE}• ${YELLOW}REMOVER CLIENTE"
-        echo -e "${RED}[${CYAN}4${RED}] ${WHITE}• ${YELLOW}REMOVER OPENVPN"
-        echo -e "${RED}[${CYAN}5${RED}] ${RED}] ${WHITE}• ${YELLOW}MULTILOGIN OVPN $mult"
-        echo -e "${RED}[${CYAN}6${RED}] ${WHITE}• ${YELLOW}ALTERAR HOST DNS"
-        echo -e "${RED}[${CYAN}7${RED}] ${WHITE}• ${YELLOW}LISTAR CLIENTES"
-        echo -e "${RED}[${CYAN}0${RED}] ${WHITE}• ${YELLOW}VOLTAR"
-        echo ""
-        echo -ne "${GREEN}O QUE DESEJA FAZER ${YELLOW}?${RED}?${WHITE} "
-        read option
-        
-        case $option in
-            1) alterar_porta ;;
-            2) criar_cliente ;;
-            3) remover_cliente ;;
-            4) remover_openvpn ;;
-            5) toggle_multilogin ;;
-            6) alterar_dns ;;
-            7) listar_clientes ;;
-            0) menu_principal ;;
-            *) echo -e "${RED}Opção inválida!${SCOLOR}"; sleep 2 ;;
-        esac
+
+# Cria um novo cliente OpenVPN.
+# Parâmetro 1: Nome do cliente.
+create_client() {
+    local CLIENT_NAME="$1"
+    
+    if [[ -z "$CLIENT_NAME" ]]; then
+        echo -ne "${WHITE}Nome do cliente: ${SCOLOR}"
+        read -r CLIENT_NAME
+        [[ -z "$CLIENT_NAME" ]] && warn "Nome inválido." && return
+    fi
+    
+    # Verificar se o cliente já existe
+    [[ -f "/etc/openvpn/easy-rsa/pki/issued/${CLIENT_NAME}.crt" ]] && warn "Cliente '$CLIENT_NAME' já existe." && return
+    
+    cd /etc/openvpn/easy-rsa/ || die "Diretório easy-rsa não encontrado."
+    
+    echo -e "${CYAN}A gerar o certificado para o cliente '$CLIENT_NAME'...${SCOLOR}"
+    fun_bar "./easyrsa build-client-full '$CLIENT_NAME' nopass"
+    
+    # Gerar ficheiro de configuração .ovpn
+    local IP PROTOCOL PORT
+    IP=$(wget -4qO- "http://whatismyip.akamai.com/") || IP=$(hostname -I | awk '{print $1}')
+    PROTOCOL=$(grep '^proto' /etc/openvpn/server.conf | cut -d " " -f 2)
+    PORT=$(grep '^port' /etc/openvpn/server.conf | cut -d " " -f 2)
+    
+    local OVPN_DIR=~/ovpn-clients
+    mkdir -p "$OVPN_DIR"
+    
+    cat > "${OVPN_DIR}/${CLIENT_NAME}.ovpn" << EOF
+client
+dev tun
+proto ${PROTOCOL}
+remote ${IP} ${PORT}
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+remote-cert-tls server
+auth SHA512
+cipher AES-256-CBC
+key-direction 1
+verb 3
+
+<ca>
+$(cat /etc/openvpn/easy-rsa/pki/ca.crt)
+</ca>
+<cert>
+$(cat "/etc/openvpn/easy-rsa/pki/issued/${CLIENT_NAME}.crt")
+</cert>
+<key>
+$(cat "/etc/openvpn/easy-rsa/pki/private/${CLIENT_NAME}.key")
+</key>
+<tls-auth>
+$(cat /etc/openvpn/ta.key)
+</tls-auth>
+EOF
+    success "Configuração do cliente guardada em: ${OVPN_DIR}/${CLIENT_NAME}.ovpn"
+}
+
+# Revoga um cliente OpenVPN existente.
+revoke_client() {
+    cd /etc/openvpn/easy-rsa/ || die "Diretório easy-rsa não encontrado."
+    
+    # Listar clientes para seleção
+    local clients
+    mapfile -t clients < <(./easyrsa list-clients | awk 'NR>1 {print $2}')
+    
+    [[ ${#clients[@]} -eq 0 ]] && warn "Nenhum cliente para revogar." && return
+    
+    echo -e "${YELLOW}Selecione o cliente a revogar:${SCOLOR}"
+    for i in "${!clients[@]}"; do
+        echo "  $((i+1))) ${clients[$i]}"
     done
-}
-
-# Função para alterar porta
-alterar_porta() {
-    clear
-    echo -e "\E[44;1;37m         ALTERAR PORTA OPENVPN         \E[0m"
-    echo ""
-    opnp=$(grep "^port" /etc/openvpn/server.conf | awk \'{print $2}\')
-    echo -e "${YELLOW}PORTA EM USO: ${GREEN}$opnp${SCOLOR}"
-    echo ""
-    echo -ne "${GREEN}QUAL PORTA DESEJA UTILIZAR ${YELLOW}?${WHITE} "
-    read porta
-    [[ -z "$porta" ]] && {
-        echo ""
-        echo -e "${RED}Porta inválida!${SCOLOR}"
-        sleep 3
+    
+    echo -ne "${WHITE}Número do cliente: ${SCOLOR}"
+    read -r choice
+    
+    # Validar escolha
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#clients[@]} )); then
+        warn "Seleção inválida."
         return
-    }
-    verif_ptrs $porta
-    
-    # Atualizar porta no server.conf
-    sed -i "s/^port .*/port $porta/" /etc/openvpn/server.conf
-    
-    # Atualizar firewall
-    if [[ "$OS" = "debian" ]]; then
-        iptables -D INPUT -p $PROTOCOL --dport $opnp -j ACCEPT
-        iptables -A INPUT -p $PROTOCOL --dport $porta -j ACCEPT
-        netfilter-persistent save
-        netfilter-persistent reload
-    elif [[ "$OS" = "centos" ]]; then
-        firewall-cmd --zone=public --remove-port=$opnp/$PROTOCOL --permanent
-        firewall-cmd --zone=public --add-port=$porta/$PROTOCOL --permanent
-        firewall-cmd --reload
     fi
     
-    systemctl restart openvpn@server
-    echo ""
-    echo -e "${GREEN}PORTA ALTERADA COM SUCESSO!${SCOLOR}"
-    sleep 2
-}
-
-# Função para criar cliente
-criar_cliente() {
-    clear
-    echo -e "\E[44;1;37m           CRIAR CLIENTE            \E[0m"
-    echo ""
-    CLIENT="Cliente"
+    local CLIENT_TO_REVOKE="${clients[$((choice-1))]}"
     
-    # Verificar se cliente já existe
-    if [[ -f /etc/openvpn/easy-rsa/pki/issued/$CLIENT.crt ]]; then
-        echo -e "${RED}Cliente já existe!${SCOLOR}"
-        sleep 2
-        return
-    }
+    echo -ne "${YELLOW}Tem a certeza que deseja revogar '$CLIENT_TO_REVOKE'? [s/N]: ${SCOLOR}"
+    read -r confirmation
     
-    echo ""
-    echo -e "${GREEN}Criando cliente...${SCOLOR}"
-    newclient $CLIENT
-    
-    echo ""
-    echo -e "${GREEN}Cliente criado! Arquivo: ~/ovpn_clients/$CLIENT.ovpn${SCOLOR}"
-    echo ""
-    echo -e "${GREEN}Pressione ENTER para continuar...${SCOLOR}"
-    read
-}
-
-# Função para remover cliente
-remover_cliente() {
-    clear
-    echo -e "\E[44;1;37m          REMOVER CLIENTE           \E[0m"
-    echo ""
-    
-    cd /etc/openvpn/easy-rsa/
-    CLIENT_LIST=$(./easyrsa list-clients | grep -v \'Name\' | grep -v \'----\')
-    if [[ -z "$CLIENT_LIST" ]]; then
-        echo -e "${RED}Nenhum cliente encontrado!${SCOLOR}"
-        sleep 2
-        return
-    }
-    
-    echo -e "${YELLOW}Clientes disponíveis:${SCOLOR}"
-    echo "$CLIENT_LIST" | nl -s \') \'
-    echo ""
-    echo -ne "${GREEN}Selecione o número do cliente para remover: ${WHITE}"
-    read CLIENT_NUMBER
-    
-    CLIENT=$(echo "$CLIENT_LIST" | sed -n "${CLIENT_NUMBER}p")
-    [[ -z "$CLIENT" ]] && {
-        echo -e "${RED}Seleção inválida!${SCOLOR}"
-        sleep 2
-        return
-    }
-    
-    echo ""
-    echo -ne "${GREEN}Confirma remoção do cliente ${YELLOW}$CLIENT${GREEN}? ${RED}[s/n]: ${WHITE}"
-    read REMOVE
-    [[ "$REMOVE" = \'s\' ]] && {
-        echo "yes" | ./easyrsa revoke $CLIENT
-        echo "yes" | ./easyrsa gen-crl
+    if [[ "$confirmation" =~ ^[sS]$ ]]; then
+        echo -e "${CYAN}A revogar o cliente...${SCOLOR}"
+        echo "yes" | ./easyrsa revoke "$CLIENT_TO_REVOKE"
+        ./easyrsa gen-crl
         cp pki/crl.pem /etc/openvpn/crl.pem
-        rm -f ~/ovpn_clients/$CLIENT.ovpn
         systemctl restart openvpn@server
-        echo ""
-        echo -e "${GREEN}Cliente removido com sucesso!${SCOLOR}"
-    } || {
-        echo -e "${RED}Operação cancelada!${SCOLOR}"
-    }
-    sleep 2
+        rm -f ~/ovpn-clients/"$CLIENT_TO_REVOKE".ovpn
+        success "Cliente '$CLIENT_TO_REVOKE' revogado."
+    else
+        warn "Operação cancelada."
+    fi
 }
 
-# Função para remover OpenVPN
-remover_openvpn() {
-    clear
-    echo -e "\E[44;1;37m          REMOVER OPENVPN           \E[0m"
-    echo ""
-    echo -ne "${GREEN}DESEJA REMOVER O OPENVPN ${RED}? ${YELLOW}[s/n]:${WHITE} "
-    read REMOVE
-    [[ "$REMOVE" = \'s\' ]] && {
-        echo ""
-        echo -e "${GREEN}REMOVENDO OPENVPN...${SCOLOR}"
+# Remove completamente a instalação do OpenVPN.
+uninstall_openvpn() {
+    echo -ne "${RED}Tem a CERTEZA que deseja remover o OpenVPN? Esta ação é irreversível. [s/N]: ${SCOLOR}"
+    read -r confirmation
+    
+    if [[ "$confirmation" =~ ^[sS]$ ]]; then
+        echo -e "${RED}A remover o OpenVPN...${SCOLOR}"
+        
+        systemctl stop openvpn@server
+        systemctl disable openvpn@server
         
         if [[ "$OS" = "debian" ]]; then
-            apt-get remove --purge -y openvpn easy-rsa
-            rm -rf /etc/openvpn
-            rm -f /etc/sysctl.d/99-openvpn.conf
-            sed -i \'/net.ipv4.ip_forward=1/d\' /etc/sysctl.conf
-            sysctl -p
-            apt-get autoremove -y
-            apt-get clean
-            # Remover regras do iptables
-            iptables -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
-            iptables -D FORWARD -s 10.8.0.0/24 -j ACCEPT
-            iptables -D INPUT -i tun0 -j ACCEPT
-            iptables -D FORWARD -i tun0 -o eth0 -j ACCEPT
-            iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o eth0 -j MASQUERADE
+            fun_bar "apt-get remove --purge -y openvpn easy-rsa && apt-get autoremove -y"
+            # Limpar regras de firewall
+            iptables -F
+            iptables -X
+            iptables -t nat -F
             netfilter-persistent save
-            netfilter-persistent reload
         elif [[ "$OS" = "centos" ]]; then
-            yum remove -y openvpn easy-rsa
-            rm -rf /etc/openvpn
-            sed -i \'/net.ipv4.ip_forward=1/d\' /etc/sysctl.conf
-            sysctl -p
-            yum autoremove -y
-            yum clean all
-            firewall-cmd --zone=public --remove-port=$PORT/$PROTOCOL --permanent
-            firewall-cmd --zone=public --remove-masquerade --permanent
+            fun_bar "yum remove -y openvpn easy-rsa"
+            # Limpar regras de firewall
+            firewall-cmd --remove-service=openvpn --permanent
+            firewall-cmd --remove-masquerade --permanent
             firewall-cmd --reload
         fi
         
-        rm -rf ~/ovpn_clients
+        rm -rf /etc/openvpn ~/ovpn-clients
         
-        echo ""
-        echo -e "${GREEN}OPENVPN REMOVIDO COM SUCESSO!${SCOLOR}"
-        sleep 3
-        menu_principal
-    } || {
-        echo -e "${RED}Operação cancelada!${SCOLOR}"
-        sleep 2
-    }
-}
-
-# Função para toggle multilogin
-toggle_multilogin() {
-    if grep -q "duplicate-cn" /etc/openvpn/server.conf;
-    then
-        sed -i \'/duplicate-cn/d\' /etc/openvpn/server.conf
-        echo -e "${YELLOW}Multilogin desabilitado!${SCOLOR}"
+        success "OpenVPN removido com sucesso."
     else
-        echo "duplicate-cn" >> /etc/openvpn/server.conf
-        echo -e "${GREEN}Multilogin habilitado!${SCOLOR}"
+        warn "Remoção cancelada."
     fi
-    systemctl restart openvpn@server
-    sleep 2
 }
 
-# Função para alterar DNS
-alterar_dns() {
-    clear
-    echo -e "\E[44;1;37m           ALTERAR DNS             \E[0m"
-    echo ""
-    echo -e "${YELLOW}Selecione o DNS:${SCOLOR}"
-    echo -e "${RED}[${CYAN}1${RED}] ${WHITE}Google (8.8.8.8)"
-    echo -e "${RED}[${CYAN}2${RED}] ${WHITE}Cloudflare (1.1.1.1)"
-    echo -e "${RED}[${CYAN}3${RED}] ${WHITE}OpenDNS (208.67.222.222)"
-    echo -e "${RED}[${CYAN}4${RED}] ${WHITE}Personalizado"
-    echo ""
-    echo -ne "${GREEN}Opção: ${WHITE}"
-    read DNS_CHOICE
-    
-    case $DNS_CHOICE in
-        1) DNS1=8.8.8.8; DNS2=8.8.4.4 ;;
-        2) DNS1=1.1.1.1; DNS2=1.0.0.1 ;;
-        3) DNS1=208.67.222.222; DNS2=208.67.220.220 ;;
-        4) 
-            echo -ne "${GREEN}DNS Primário: ${WHITE}"
-            read DNS1
-            echo -ne "${GREEN}DNS Secundário: ${WHITE}"
-            read DNS2
-            ;;
-        *) echo -e "${RED}Opção inválida!${SCOLOR}"; sleep 2; return ;;
-    esac
-    
-    # Atualizar DNS no server.conf
-    sed -i \'/^push "dhcp-option DNS/d\' /etc/openvpn/server.conf
-    echo "push \"dhcp-option DNS $DNS1\"" >> /etc/openvpn/server.conf
-    echo "push \"dhcp-option DNS $DNS2\"" >> /etc/openvpn/server.conf
-    
-    systemctl restart openvpn@server
-    echo ""
-    echo -e "${GREEN}DNS alterado com sucesso!${SCOLOR}"
-    echo -e "${YELLOW}DNS1: $DNS1 | DNS2: $DNS2${SCOLOR}"
-    sleep 2
-}
+# --- Menus de Gestão ---
 
-# Função para listar clientes
-listar_clientes() {
-    clear
-    echo -e "\E[44;1;37m          CLIENTES OPENVPN          \E[0m"
-    echo ""
-    
-    cd /etc/openvpn/easy-rsa/
-    CLIENT_LIST=$(./easyrsa list-clients | grep -v \'Name\' | grep -v \'----\')
-    if [[ -z "$CLIENT_LIST" ]]; then
-        echo -e "${RED}Nenhum cliente encontrado!${SCOLOR}"
-    else
-        echo -e "${GREEN}Clientes ativos:${SCOLOR}"
-        echo "$CLIENT_LIST" | nl -s \') \'
-    fi
-    
-    echo ""
-    echo -e "${GREEN}Pressione ENTER para continuar...${SCOLOR}"
-    read
-}
-
-# Menu principal
-menu_principal() {
-    while :; do
+# Menu principal do script.
+main_menu() {
+    while true; do
         clear
-        echo -e "\E[44;1;37m          OPENVPN MANAGER           \E[0m"
-        echo ""
+        echo -e "${BLUE}--- OpenVPN Installer & Manager ---${SCOLOR}"
+        echo -e "${CYAN}Versão Funcional Revisada${SCOLOR}\n"
         
-        # Verificar status do OpenVPN
-        if systemctl is-active --quiet openvpn@server;
-        then
-            opnp=$(grep "^port" /etc/openvpn/server.conf | awk \'{print $2}\')
-            echo -e "${GREEN}Status: ${WHITE}OpenVPN Ativo - Porta: ${GREEN}$opnp${SCOLOR}"
-            echo ""
-            echo -e "${RED}[${CYAN}1${RED}] ${WHITE}• ${YELLOW}GERENCIAR OPENVPN"
-            echo -e "${RED}[${CYAN}2${RED}] ${WHITE}• ${YELLOW}CRIAR CLIENTE"
-            echo -e "${RED}[${CYAN}3${RED}] ${WHITE}• ${YELLOW}REMOVER OPENVPN"
+        if systemctl is-active --quiet openvpn@server; then
+            local port proto
+            port=$(grep '^port' /etc/openvpn/server.conf | awk '{print $2}')
+            proto=$(grep '^proto' /etc/openvpn/server.conf | awk '{print $2}')
+            echo -e "${GREEN}STATUS: Ativo${SCOLOR} | ${WHITE}Porta: $port ($proto)${SCOLOR}\n"
+            echo -e "${YELLOW}1)${SCOLOR} Criar um novo cliente"
+            echo -e "${YELLOW}2)${SCOLOR} Revogar um cliente existente"
+            echo -e "${YELLOW}3)${SCOLOR} Desinstalar o OpenVPN"
+            echo -e "${YELLOW}0)${SCOLOR} Sair"
         else
-            echo -e "${RED}Status: ${WHITE}OpenVPN Não Instalado${SCOLOR}"
-            echo ""
-            echo -e "${RED}[${CYAN}1${RED}] ${WHITE}• ${YELLOW}INSTALAR OPENVPN"
+            echo -e "${RED}STATUS: Não Instalado${SCOLOR}\n"
+            echo -e "${YELLOW}1)${SCOLOR} Instalar OpenVPN"
+            echo -e "${YELLOW}0)${SCOLOR} Sair"
         fi
         
-        echo -e "${RED}[${CYAN}0${RED}] ${WHITE}• ${YELLOW}SAIR"
-        echo ""
-        echo -ne "${GREEN}Selecione uma opção: ${WHITE}"
-        read option
+        echo -ne "\n${WHITE}Escolha uma opção: ${SCOLOR}"
+        read -r choice
         
-        case $option in
-            1)
-                if systemctl is-active --quiet openvpn@server;
-                then
-                    gerenciar_openvpn
-                else
-                    fun_openvpn
-                fi
-                ;;
-            2)
-                if systemctl is-active --quiet openvpn@server;
-                then
-                    criar_cliente
-                else
-                    echo -e "${RED}OpenVPN não está instalado!${SCOLOR}"
-                    sleep 2
-                fi
-                ;;
-            3)
-                if systemctl is-active --quiet openvpn@server;
-                then
-                    remover_openvpn
-                else
-                    echo -e "${RED}OpenVPN não está instalado!${SCOLOR}"
-                    sleep 2
-                fi
-                ;;
-            0)
-                clear
-                echo -e "${GREEN}Saindo...${SCOLOR}"
-                exit 0
-                ;;
-            *)
-                echo -e "${RED}Opção inválida!${SCOLOR}"
-                sleep 2
-                ;;
-        esac
+        if systemctl is-active --quiet openvpn@server; then
+            case "$choice" in
+                1) create_client ;;
+                2) revoke_client ;;
+                3) uninstall_openvpn; main_menu ;;
+                0) exit 0 ;;
+                *) warn "Opção inválida." ;;
+            esac
+        else
+            case "$choice" in
+                1) install_openvpn ;;
+                0) exit 0 ;;
+                *) warn "Opção inválida." ;;
+            esac
+        fi
+        [[ -n "$choice" && "$choice" != "0" ]] && echo -e "\n${CYAN}Pressione ENTER para continuar...${SCOLOR}" && read -r
     done
 }
 
-# Iniciar script
-clear
-menu_principal
+# --- Ponto de Entrada do Script ---
+main() {
+    clear
+    check_root
+    check_bash
+    check_tun
+    detect_os
+    # A verificação de dependências é feita antes da instalação.
+    main_menu
+}
 
+# Executa a função principal
+main
 
