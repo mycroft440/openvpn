@@ -5,15 +5,15 @@
 #	Versão Revisada, Refatorada e Aprimorada
 # =================================================================
 
-# --- Variáveis de Cor ---
+# --- Variáveis de Cor (usando ANSI-C Quoting para robustez) ---
 # Usadas para formatar a saída do terminal, tornando-a mais legível.
-readonly RED='\033[1;31m'
-readonly GREEN='\033[1;32m'
-readonly YELLOW='\033[1;33m'
-readonly BLUE='\033[1;34m'
-readonly CYAN='\033[1;36m'
-readonly WHITE='\033[1;37m'
-readonly SCOLOR='\033[0m'
+readonly RED=$'\e[1;31m'
+readonly GREEN=$'\e[1;32m'
+readonly YELLOW=$'\e[1;33m'
+readonly BLUE=$'\e[1;34m'
+readonly CYAN=$'\e[1;36m'
+readonly WHITE=$'\e[1;37m'
+readonly SCOLOR=$'\e[0m'
 
 # --- Funções de Utilidade ---
 
@@ -72,7 +72,7 @@ check_root() {
 
 # Verifica se o script está a ser executado com bash, não sh.
 check_bash() {
-    readlink /proc/$$/exe | grep -q "bash" || die "Execute este script com bash, não com sh."
+    readlink /proc/$$/exe | grep -q "bash" || die "Execute este script com bash, não com sh (ex: bash ./script.sh)."
 }
 
 # Verifica se o TUN/TAP está disponível.
@@ -125,7 +125,8 @@ install_openvpn() {
     echo -e "${CYAN}A instalar dependências...${SCOLOR}"
     if [[ "$OS" = "debian" ]]; then
         fun_bar "apt-get update && apt-get install -y openvpn easy-rsa lsof iptables-persistent"
-    elif [[ "$OS" = "centos" ]]; fun_bar "yum install -y epel-release && yum install -y openvpn easy-rsa lsof firewalld"
+    elif [[ "$OS" = "centos" ]]; then
+        fun_bar "yum install -y epel-release && yum install -y openvpn easy-rsa lsof firewalld"
     fi
 
     # Configurar EasyRSA
@@ -453,4 +454,3 @@ main() {
 
 # Executa a função principal
 main
-
