@@ -40,8 +40,8 @@ fun_bar() {
     tput civis
     echo -ne "${YELLOW}Aguarde... [${SCOLOR}"
     
-    while ps -p $pid > /dev/null; do
-        i=$(( (i+1) % 4 ))
+    while ps -p "$pid" > /dev/null; do
+        i=$(( (i + 1) % 4 ))
         echo -ne "${CYAN}${spinner:$i:1}${SCOLOR}"
         sleep 0.2
         echo -ne "\b"
@@ -49,7 +49,7 @@ fun_bar() {
     
     echo -e "${YELLOW}]${SCOLOR} - ${GREEN}Concluído!${SCOLOR}"
     tput cnorm
-    wait $pid || die "Comando falhou: $cmd"
+    wait "$pid" || die "Comando falhou: $cmd"
 }
 
 # --- Verificações Iniciais ---
@@ -71,16 +71,14 @@ check_dependencies() {
     local packages=("openvpn" "easy-rsa" "iptables" "lsof")
     local checks=("command -v openvpn" "[ -d /usr/share/easy-rsa ]" "command -v iptables" "command -v lsof")
     
-    # Verifica cada dependência
     for i in "${!packages[@]}"; do
         if ! eval "${checks[$i]}"; then
             missing+=("${packages[$i]}")
         fi
     done
     
-    # Se houver dependências faltando, solicita instalação
     if [[ ${#missing[@]} -gt 0 ]]; then
-        echo -e "${YELLOW}Dependências em falta: ${missing[*]}.${SCOLOR}"
+        echo -e "${YELLOW}Dependências em falta: ${missing[*]}${SCOLOR}"
         echo -ne "${WHITE}Deseja instalá-las automaticamente? [s/N]: ${SCOLOR}"
         read -r install_choice
         if [[ "$install_choice" =~ ^[sS]$ ]]; then
@@ -94,18 +92,14 @@ check_dependencies() {
                 fun_bar "yum install -y ${missing[*]}"
             fi
             
-            # Verifica novamente após instalação
             local still_missing=()
             for i in "${!packages[@]}"; do
                 if ! eval "${checks[$i]}"; then
                     still_missing+=("${packages[$i]}")
                 fi
             done
-            if [[ ${#still_missing[@]} -gt 0 ]]; then
-                die "Falha ao instalar: ${still_missing[*]}."
-            else
-                success "Dependências instaladas com sucesso!"
-            fi
+            [[ ${#still_missing[@]} -gt 0 ]] && die "Falha ao instalar: ${still_missing[*]}."
+            success "Dependências instaladas com sucesso!"
         else
             die "Instalação das dependências é necessária para prosseguir."
         fi
@@ -117,13 +111,9 @@ check_dependencies() {
 # --- Detecção de Sistema Operacional ---
 
 detect_os() {
-    if [[ -f /etc/os-release ]]; then
-        source /etc/os-release
-        OS_ID="$ID"
-    else
-        die "Não foi possível detectar o sistema operacional."
-    fi
-
+    [[ -f /etc/os-release ]] || die "Não foi possível detectar o sistema operacional."
+    source /etc/os-release
+    OS_ID="$ID"
     case "$OS_ID" in
         ubuntu|debian) OS="debian"; GROUPNAME="nogroup" ;;
         centos|fedora|rhel) OS="centos"; GROUPNAME="nobody" ;;
@@ -139,16 +129,19 @@ install_openvpn() {
     
     local EASY_RSA_DIR="/etc/openvpn/easy-rsa"
     mkdir -p "$EASY_RSA_DIR" || die "Falha ao criar diretório $EASY_RSA_DIR."
-    cp -r /usr/share/easy-rsa/* "$EASY_RSA_DIR/" || die "EasyRSA não encontrado em /usr/share/easy-rsa."
-    chmod +x "$EASY_RSA_DIR/easyrsa"
+    cp -r /usr/share/easy-rsa/* "$EASY_RSA_DIR/" 2>/dev/null || cp -r /usr/lib64/easy-rsa/* "$EASY_RSA_DIR/" || die "EasyRSA não encontrado em /usr/share/easy-rsa ou /usr/lib64/easy-rsa."
+    chmod +x "$EASY_RSA_DIR/easyrsa" || die "Falha ao ajustar permissões do EasyRSA."
     cd "$EASY_RSA_DIR" || die "Não foi possível acessar $EASY_RSA_DIR."
 
     echo -e "${CYAN}A configurar EasyRSA...${SCOLOR}"
     ./easyrsa init-pki || die "Falha ao inicializar PKI."
     echo "Easy-RSA CA" | ./easyrsa build-ca nopass || die "Falha ao criar CA."
-    echo "server" | ./easyrsa build-server-full server nopass || die "Falha ao criar certificado do servidor."
+    echo "server" | ./easyrsa build-server-full server nopass || die "Falha ao criar chave do servidor."
     ./easyrsa gen-dh || die "Falha ao gerar DH."
     openvpn --genkey --secret pki/ta.key || die "Falha ao gerar chave TA."
+    
+    # Assinatura automática do certificado do servidor
+    echo "yes" | ./easyrsa sign-req server server || die "Falha ao assinar o certificado do servidor."
     
     cp pki/ca.crt pki/issued/server.crt pki/private/server.key pki/dh.pem pki/ta.key /etc/openvpn/ || die "Falha ao copiar arquivos."
     chown root:root /etc/openvpn/*.{key,crt,pem} || die "Falha ao ajustar propriedade."
@@ -178,7 +171,7 @@ configure_server() {
     echo -e "${CYAN}A configurar o servidor OpenVPN...${SCOLOR}"
     
     local IP
-    IP=$(wget -4qO- "http://whatismyip.akamai.com/") || IP=$(hostname -I | awk '{print $1}')
+    IP=$(wget -4qO- "http://whatismyip.akamai.com/" 2>/dev/null) || IP=$(hostname -I | awk '{print $1}')
     [[ -z "$IP" ]] && die "Não foi possível determinar o IP público."
     
     echo -ne "${WHITE}Porta para o OpenVPN [padrão: 1194]: ${SCOLOR}"
@@ -201,7 +194,7 @@ configure_server() {
     esac
     
     mkdir -p /var/log/openvpn || die "Falha ao criar diretório de logs."
-    chown nobody:$GROUPNAME /var/log/openvpn || die "Falha ao ajustar permissões de logs."
+    chown nobody:"$GROUPNAME" /var/log/openvpn || die "Falha ao ajustar permissões de logs."
     
     cat > /etc/openvpn/server.conf << EOF
 port $PORT
@@ -231,7 +224,7 @@ log-append /var/log/openvpn/openvpn.log
 verb 3
 crl-verify crl.pem
 EOF
-    cd /etc/openvpn/easy-rsa/ || die "Diretório easy-rsa não encontrado."
+    cd "$EASY_RSA_DIR" || die "Diretório easy-rsa não encontrado."
     ./easyrsa gen-crl || die "Falha ao gerar CRL."
     cp pki/crl.pem /etc/openvpn/crl.pem || die "Falha ao copiar CRL."
     chown root:root /etc/openvpn/crl.pem
@@ -273,10 +266,10 @@ create_client() {
     [[ -f "pki/issued/${CLIENT_NAME}.crt" ]] && warn "Cliente '$CLIENT_NAME' já existe." && return
     
     echo -e "${CYAN}A gerar certificado para '$CLIENT_NAME'...${SCOLOR}"
-    fun_bar "./easyrsa build-client-full '$CLIENT_NAME' nopass"
+    echo "yes" | ./easyrsa build-client-full "$CLIENT_NAME" nopass || die "Falha ao gerar certificado do cliente."
     
     local IP PROTOCOL PORT
-    IP=$(wget -4qO- "http://whatismyip.akamai.com/") || IP=$(hostname -I | awk '{print $1}')
+    IP=$(wget -4qO- "http://whatismyip.akamai.com/" 2>/dev/null) || IP=$(hostname -I | awk '{print $1}')
     PROTOCOL=$(grep '^proto' /etc/openvpn/server.conf | cut -d " " -f 2)
     PORT=$(grep '^port' /etc/openvpn/server.conf | cut -d " " -f 2)
     
@@ -326,7 +319,7 @@ revoke_client() {
     
     echo -e "${YELLOW}Selecione o cliente a revogar:${SCOLOR}"
     for i in "${!clients[@]}"; do
-        echo "  $((i+1))) ${clients[$i]}"
+        echo "  $((i + 1))) ${clients[$i]}"
     done
     
     echo -ne "${WHITE}Número do cliente: ${SCOLOR}"
@@ -337,7 +330,7 @@ revoke_client() {
         return
     fi
     
-    local CLIENT_TO_REVOKE="${clients[$((choice-1))]}"
+    local CLIENT_TO_REVOKE="${clients[$((choice - 1))]}"
     
     echo -ne "${YELLOW}Tem certeza que deseja revogar '$CLIENT_TO_REVOKE'? [s/N]: ${SCOLOR}"
     read -r confirmation
@@ -379,7 +372,7 @@ uninstall_openvpn() {
             iptables -D INPUT -i tun+ -j ACCEPT 2>/dev/null
             iptables -D FORWARD -i tun+ -j ACCEPT 2>/dev/null
             iptables -D FORWARD -o tun+ -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null
-            iptables-save > /etc/iptables/rules.v4
+            iptables-save > /etc/iptables/rules.v4 2>/dev/null
         elif [[ "$OS" = "centos" ]]; then
             fun_bar "yum remove -y openvpn easy-rsa firewalld lsof"
             firewall-cmd --remove-service=openvpn --permanent 2>/dev/null
@@ -388,7 +381,7 @@ uninstall_openvpn() {
         fi
         
         rm -rf /etc/openvpn ~/ovpn-clients
-        success "OpenVPN removido para testes."
+        success "OpenVPN removido com sucesso."
     else
         warn "Remoção cancelada."
     fi
