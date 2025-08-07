@@ -2,7 +2,7 @@
 # =================================================================
 # OpenVPN Installer & Manager
 # Baseado no script original do SSH-PRO @TMYCOMNECTVPN
-# Versão Revisada, Refatorada e Aprimorada (Corrigida para 2025)
+# Versão Revisada, Refatorada e Aprimorada (Corrigida para erro compress none em 2025)
 # =================================================================
 # --- Variáveis de Cor ---
 readonly RED=$'\e[1;31m'
@@ -60,7 +60,6 @@ check_dependencies() {
     local packages=("openvpn" "easy-rsa" "iptables" "lsof")
     local checks=("command -v openvpn" "[ -d /usr/share/easy-rsa ] || [ -d /usr/lib/easy-rsa ] || [ -d /usr/lib64/easy-rsa ]" "command -v iptables" "command -v lsof")
    
-    # Adicionar iptables-persistent para Debian/Ubuntu para persistência de regras
     if [[ "$OS" == "debian" ]]; then
         packages+=("iptables-persistent")
         checks+=("command -v iptables-save")
@@ -101,6 +100,11 @@ check_dependencies() {
     else
         echo -e "${GREEN}Todas as dependências estão presentes.${SCOLOR}"
     fi
+    # Checagem extra para versão do OpenVPN
+    local ovpn_version=$(openvpn --version | head -1 | awk '{print $2}')
+    if [[ "$ovpn_version" < "2.5" ]]; then
+        warn "Versão do OpenVPN ($ovpn_version) é antiga. Recomendo atualizar para 2.5+ para compatibilidade."
+    fi
 }
 # --- Detecção de Sistema Operacional ---
 detect_os() {
@@ -120,28 +124,28 @@ install_openvpn() {
    
     local EASY_RSA_DIR="/etc/openvpn/easy-rsa"
     mkdir -p "$EASY_RSA_DIR" || die "Falha ao criar diretório $EASY_RSA_DIR."
-    # Paths flexíveis para Easy-RSA em diferentes distros
     cp -r /usr/share/easy-rsa/* "$EASY_RSA_DIR/" 2>/dev/null || cp -r /usr/lib/easy-rsa/* "$EASY_RSA_DIR/" 2>/dev/null || cp -r /usr/lib64/easy-rsa/* "$EASY_RSA_DIR/" 2>/dev/null || die "EasyRSA não encontrado."
     chmod +x "$EASY_RSA_DIR/easyrsa" || die "Falha ao ajustar permissões do EasyRSA."
     cd "$EASY_RSA_DIR" || die "Não foi possível acessar $EASY_RSA_DIR."
     echo -e "${CYAN}A configurar EasyRSA...${SCOLOR}"
     ./easyrsa init-pki || die "Falha ao inicializar PKI."
     echo "Easy-RSA CA" | ./easyrsa build-ca nopass || die "Falha ao criar CA."
-    # build-server-full gera e assina automaticamente; removi sign-req redundante
-    ./easyrsa build-server-full server nopass || die "Falha ao criar certificado do servidor."
+    echo "yes" | ./easyrsa build-server-full server nopass || die "Falha ao criar certificado do servidor."
     ./easyrsa gen-dh || die "Falha ao gerar DH."
-    openvpn --genkey --secret pki/ta.key || die "Falha ao gerar chave TA."
+    openvpn --genkey secret pki/ta.key || die "Falha ao gerar chave TA."
+    [[ ! -s pki/ta.key ]] && die "Arquivo ta.key gerado, mas vazio ou inexistente. Verifique versão do OpenVPN."
    
     cp pki/ca.crt pki/issued/server.crt pki/private/server.key pki/dh.pem pki/ta.key /etc/openvpn/ || die "Falha ao copiar arquivos."
     chown root:root /etc/openvpn/*.{key,crt,pem} || die "Falha ao ajustar propriedade."
     chmod 600 /etc/openvpn/*.{key,crt,pem} || die "Falha ao ajustar permissões."
+    [[ ! -s /etc/openvpn/ta.key ]] && die "ta.key copiado, mas vazio. Falha na geração."
    
     configure_server
     configure_firewall
     echo -e "${CYAN}A iniciar o serviço OpenVPN...${SCOLOR}"
     if command -v systemctl >/dev/null 2>&1; then
         systemctl enable openvpn@server || die "Falha ao habilitar o serviço."
-        systemctl start openvpn@server || die "Falha ao iniciar o serviço."
+        systemctl start openvpn@server || die "Falha ao iniciar o serviço. Rode 'journalctl -xeu openvpn@server.service' para detalhes."
     else
         service openvpn@server start || die "Falha ao iniciar o serviço sem systemd."
     fi
@@ -200,10 +204,9 @@ push "redirect-gateway def1 bypass-dhcp"
 push "dhcp-option DNS $DNS1"
 push "dhcp-option DNS $DNS2"
 keepalive 10 120
-cipher AES-256-GCM  # Atualizado para cipher moderno e seguro em 2025
-ncp-ciphers AES-256-GCM:AES-128-GCM  # Suporte a NCP para compatibilidade
-compress none  # Desabilitado para evitar vulnerabilidades
-tls-version-min 1.2  # Força TLS 1.2+
+cipher AES-256-GCM
+ncp-ciphers AES-256-GCM:AES-128-GCM
+tls-version-min 1.2
 user nobody
 group $GROUPNAME
 persist-key
@@ -230,7 +233,6 @@ configure_firewall() {
         iptables -A INPUT -i tun+ -j ACCEPT
         iptables -A FORWARD -i tun+ -j ACCEPT
         iptables -A FORWARD -i "$IFACE" -o tun+ -m state --state RELATED,ESTABLISHED -j ACCEPT
-        # Salva regras com iptables-persistent (já instalado)
         iptables-save > /etc/iptables/rules.v4 || die "Falha ao salvar regras iptables."
         netfilter-persistent save || die "Falha ao persistir regras (verifique iptables-persistent)."
     elif [[ "$OS" = "centos" ]]; then
@@ -254,7 +256,7 @@ create_client() {
     [[ -f "pki/issued/${CLIENT_NAME}.crt" ]] && warn "Cliente '$CLIENT_NAME' já existe." && return
    
     echo -e "${CYAN}A gerar certificado para '$CLIENT_NAME'...${SCOLOR}"
-    ./easyrsa build-client-full "$CLIENT_NAME" nopass || die "Falha ao gerar certificado do cliente."
+    echo "yes" | ./easyrsa build-client-full "$CLIENT_NAME" nopass || die "Falha ao gerar certificado do cliente."
    
     local IP PROTOCOL PORT
     IP=$(curl -s ifconfig.me 2>/dev/null) || IP=$(wget -4qO- "http://whatismyip.akamai.com/" 2>/dev/null) || IP=$(hostname -I | awk '{print $1}')
@@ -278,7 +280,6 @@ auth SHA512
 cipher AES-256-GCM
 key-direction 1
 verb 3
-compress none
 <ca>
 $(cat /etc/openvpn/easy-rsa/pki/ca.crt)
 </ca>
@@ -378,7 +379,7 @@ main_menu() {
     while true; do
         clear
         echo -e "${BLUE}--- OpenVPN Installer & Manager ---${SCOLOR}"
-        echo -e "${CYAN}Versão Funcional Revisada (Corrigida)${SCOLOR}\n"
+        echo -e "${CYAN}Versão Funcional Revisada (Corrigida para compress)${SCOLOR}\n"
        
         if systemctl is-active --quiet openvpn@server 2>/dev/null || service openvpn@server status >/dev/null 2>&1; then
             local port proto
