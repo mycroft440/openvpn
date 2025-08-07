@@ -67,11 +67,51 @@ check_tun() {
 }
 
 check_dependencies() {
-    local missing_deps=()
-    for cmd in wget openvpn lsof easy-rsa iptables ip; do
-        command -v "$cmd" >/dev/null 2>&1 || missing_deps+=("$cmd")
+    local missing=()
+    local packages=("openvpn" "easy-rsa" "iptables" "lsof")
+    local checks=("command -v openvpn" "[ -d /usr/share/easy-rsa ]" "command -v iptables" "command -v lsof")
+    
+    # Verifica cada dependência
+    for i in "${!packages[@]}"; do
+        if ! eval "${checks[$i]}"; then
+            missing+=("${packages[$i]}")
+        fi
     done
-    [[ ${#missing_deps[@]} -gt 0 ]] && die "Dependências em falta: ${missing_deps[*]}."
+    
+    # Se houver dependências faltando, solicita instalação
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo -e "${YELLOW}Dependências em falta: ${missing[*]}.${SCOLOR}"
+        echo -ne "${WHITE}Deseja instalá-las automaticamente? [s/N]: ${SCOLOR}"
+        read -r install_choice
+        if [[ "$install_choice" =~ ^[sS]$ ]]; then
+            echo -e "${CYAN}Instalando dependências faltantes...${SCOLOR}"
+            if [[ "$OS" == "debian" ]]; then
+                fun_bar "apt update && apt install -y ${missing[*]}"
+            elif [[ "$OS" == "centos" ]]; then
+                if ! yum list installed epel-release >/dev/null 2>&1; then
+                    fun_bar "yum install -y epel-release"
+                fi
+                fun_bar "yum install -y ${missing[*]}"
+            fi
+            
+            # Verifica novamente após instalação
+            local still_missing=()
+            for i in "${!packages[@]}"; do
+                if ! eval "${checks[$i]}"; then
+                    still_missing+=("${packages[$i]}")
+                fi
+            done
+            if [[ ${#still_missing[@]} -gt 0 ]]; then
+                die "Falha ao instalar: ${still_missing[*]}."
+            else
+                success "Dependências instaladas com sucesso!"
+            fi
+        else
+            die "Instalação das dependências é necessária para prosseguir."
+        fi
+    else
+        echo -e "${GREEN}Todas as dependências estão presentes.${SCOLOR}"
+    fi
 }
 
 # --- Detecção de Sistema Operacional ---
@@ -97,13 +137,6 @@ install_openvpn() {
     clear
     echo -e "${BLUE}--- Instalador OpenVPN ---${SCOLOR}"
     
-    echo -e "${CYAN}A instalar dependências...${SCOLOR}"
-    if [[ "$OS" = "debian" ]]; then
-        fun_bar "apt update && apt install -y openvpn easy-rsa lsof iptables-persistent"
-    elif [[ "$OS" = "centos" ]]; then
-        fun_bar "yum install -y epel-release && yum install -y openvpn easy-rsa lsof firewalld"
-    fi
-
     local EASY_RSA_DIR="/etc/openvpn/easy-rsa"
     mkdir -p "$EASY_RSA_DIR" || die "Falha ao criar diretório $EASY_RSA_DIR."
     cp -r /usr/share/easy-rsa/* "$EASY_RSA_DIR/" || die "EasyRSA não encontrado em /usr/share/easy-rsa."
@@ -118,7 +151,7 @@ install_openvpn() {
     openvpn --genkey --secret pki/ta.key || die "Falha ao gerar chave TA."
     
     cp pki/ca.crt pki/issued/server.crt pki/private/server.key pki/dh.pem pki/ta.key /etc/openvpn/ || die "Falha ao copiar arquivos."
-    chown root:root /etc/openvpn/*.{key,crt,pem} || die " falha ao ajustar propriedade."
+    chown root:root /etc/openvpn/*.{key,crt,pem} || die "Falha ao ajustar propriedade."
     chmod 600 /etc/openvpn/*.{key,crt,pem} || die "Falha ao ajustar permissões."
     
     configure_server
@@ -341,21 +374,21 @@ uninstall_openvpn() {
         fi
         
         if [[ "$OS" = "debian" ]]; then
-            fun_bar "apt remove --purge -y openvpn easy-rsa && apt autoremove -y"
+            fun_bar "apt remove --purge -y openvpn easy-rsa iptables-persistent lsof && apt autoremove -y"
             iptables -t nat -D POSTROUTING -s 10.8.0.0/24 -j MASQUERADE 2>/dev/null
             iptables -D INPUT -i tun+ -j ACCEPT 2>/dev/null
             iptables -D FORWARD -i tun+ -j ACCEPT 2>/dev/null
             iptables -D FORWARD -o tun+ -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null
             iptables-save > /etc/iptables/rules.v4
         elif [[ "$OS" = "centos" ]]; then
-            fun_bar "yum remove -y openvpn easy-rsa"
+            fun_bar "yum remove -y openvpn easy-rsa firewalld lsof"
             firewall-cmd --remove-service=openvpn --permanent 2>/dev/null
             firewall-cmd --remove-masquerade --permanent 2>/dev/null
             firewall-cmd --reload 2>/dev/null
         fi
         
         rm -rf /etc/openvpn ~/ovpn-clients
-        success "OpenVPN removido com sucesso."
+        success "OpenVPN removido para testes."
     else
         warn "Remoção cancelada."
     fi
